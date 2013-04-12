@@ -45,7 +45,7 @@ type BlockHash struct {
 }
 
 // Write signatures as they are generated.
-type SignatureWriter func(bl BlockHash)
+type SignatureWriter func(bl BlockHash) error
 
 // Properties to use while working with the rsync algorithm.
 type RSync struct {
@@ -77,12 +77,14 @@ func (r *RSync) CreateSignature(target io.Reader, sw SignatureWriter) error {
 	if r.UniqueHasher == nil {
 		r.UniqueHasher = md5.New()
 	}
+	var err error
+	var n int
 	buffer := make([]byte, r.BlockSize)
 	var block []byte
 	loop := true
 	var index uint64
 	for loop {
-		n, err := io.ReadAtLeast(target, buffer, r.BlockSize)
+		n, err = io.ReadAtLeast(target, buffer, r.BlockSize)
 		if err != nil {
 			// n == 0
 			if err == io.EOF {
@@ -96,7 +98,10 @@ func (r *RSync) CreateSignature(target io.Reader, sw SignatureWriter) error {
 		}
 		block = buffer[:n]
 		weak, _, _ := βhash(block)
-		sw(BlockHash{StrongHash: r.uniqueHash(block), WeakHash: weak, Index: index})
+		err = sw(BlockHash{StrongHash: r.uniqueHash(block), WeakHash: weak, Index: index})
+		if err != nil {
+			return err
+		}
 		index++
 	}
 	return nil
