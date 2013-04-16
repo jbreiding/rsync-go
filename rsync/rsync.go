@@ -232,7 +232,15 @@ func (r *RSync) CreateDelta(source io.Reader, signature []BlockHash, ops chan Op
 			dirty = false
 			data.tail = data.head
 		}
-		if !foundHash {
+		if foundHash {
+			ops <- Operation{Type: BLOCK, BlockIndex: blockIndex}
+			data.tail = sum.head
+			rolling = false
+			sum.tail += r.BlockSize
+
+			// May trigger "data wrap".
+			data.head = sum.tail
+		} else {
 			dirty = true
 
 			// The following is for the next loop iteration, so don't try to calculate if last.
@@ -243,15 +251,7 @@ func (r *RSync) CreateDelta(source io.Reader, signature []BlockHash, ops chan Op
 
 			// May trigger "data wrap".
 			data.head = sum.tail
-			continue
 		}
-		ops <- Operation{Type: BLOCK, BlockIndex: blockIndex}
-		data.tail = sum.head
-		rolling = false
-		sum.tail += r.BlockSize
-
-		// May trigger "data wrap".
-		data.head = sum.tail
 	}
 	return nil
 }
