@@ -233,9 +233,6 @@ func test(basis1, basis2 string) error {
 			buffer.buf = buffer.orig
 			n, err := f.Read(buffer.orig)
 			if n == 0 {
-				// if cap(buffer.buf) == 0 {
-				// 	panic("EQ A")
-				// }
 				bufferFount <- buffer
 			} else {
 				buffer.buf = buffer.orig[:n]
