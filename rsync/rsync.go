@@ -16,8 +16,8 @@ import (
 )
 
 // If no BlockSize is specified in the RSync instance, this value is used.
-const DefaultBlockSize = 1024 * 64
-const DefaultMaxDataOp = DefaultBlockSize * 10
+const DefaultBlockSize = 1024 * 6
+const DefaultMaxDataOp = DefaultBlockSize * 1
 
 // Internal constant used in rolling checksum.
 const _M = 1 << 16
@@ -117,6 +117,7 @@ func (r *RSync) ApplyDelta(alignedTarget io.Writer, target io.ReadSeeker, ops ch
 	var block []byte
 
 	buffer := make([]byte, r.BlockSize)
+
 	for op := range ops {
 		switch op.Type {
 		case BLOCK:
@@ -174,13 +175,13 @@ func (r *RSync) CreateDelta(source io.Reader, signature []BlockHash, ops chan Op
 	var n, validTo, prevValidTo int
 	var αPop, αPush, β, β1, β2 uint32
 	var blockIndex uint64
-	var rolling, dirty, lastRun, foundHash bool
+	var rolling, lastRun, foundHash bool
 
-	var buffer = make([]byte, (r.BlockSize*3)+r.MaxDataOp)
+	var buffer = make([]byte, (r.BlockSize*5)+r.MaxDataOp)
 
 	for !lastRun {
 		// First check for any data segments which have wrapped.
-		if sum.head >= validTo {
+		if sum.tail+r.BlockSize > validTo {
 			if validTo+r.BlockSize > len(buffer) {
 				// Before wrapping the buffer, record the previous valid data section.
 				prevValidTo = validTo
@@ -196,10 +197,6 @@ func (r *RSync) CreateDelta(source io.Reader, signature []BlockHash, ops chan Op
 					return err
 				}
 				lastRun = true
-
-				// Send any remaining data. This will be smaller then
-				// a block size so it will never need to hash.
-				dirty = true
 
 				// May trigger "data wrap".
 				data.head = validTo
@@ -227,9 +224,8 @@ func (r *RSync) CreateDelta(source io.Reader, signature []BlockHash, ops chan Op
 		if hh, ok := hashLookup[β]; ok && !lastRun {
 			blockIndex, foundHash = findUniqueHash(hh, r.uniqueHash(buffer[sum.tail:sum.head]))
 		}
-		if dirty && (foundHash || data.head-data.tail >= r.MaxDataOp || lastRun) {
+		if data.tail < data.head && (foundHash || data.head-data.tail >= r.MaxDataOp || lastRun) {
 			ops <- Operation{Type: DATA, Data: buffer[data.tail:data.head]}
-			dirty = false
 			data.tail = data.head
 		}
 		if foundHash {
@@ -241,8 +237,6 @@ func (r *RSync) CreateDelta(source io.Reader, signature []BlockHash, ops chan Op
 			// May trigger "data wrap".
 			data.head = sum.tail
 		} else {
-			dirty = true
-
 			// The following is for the next loop iteration, so don't try to calculate if last.
 			if !lastRun {
 				αPop = uint32(buffer[sum.tail])
