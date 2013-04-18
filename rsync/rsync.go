@@ -13,11 +13,14 @@ import (
 	"crypto/md5"
 	"hash"
 	"io"
+
+	// "log"
 )
 
+// 3782
 // If no BlockSize is specified in the RSync instance, this value is used.
 const DefaultBlockSize = 1024 * 6
-const DefaultMaxDataOp = DefaultBlockSize * 1
+const DefaultMaxDataOp = DefaultBlockSize * 10
 
 // Internal constant used in rolling checksum.
 const _M = 1 << 16
@@ -46,6 +49,7 @@ type BlockHash struct {
 
 // Write signatures as they are generated.
 type SignatureWriter func(bl BlockHash) error
+type OperationWriter func(op Operation) error
 
 // Properties to use while working with the rsync algorithm.
 type RSync struct {
@@ -86,14 +90,14 @@ func (r *RSync) CreateSignature(target io.Reader, sw SignatureWriter) error {
 	for loop {
 		n, err = io.ReadAtLeast(target, buffer, r.BlockSize)
 		if err != nil {
-			// n == 0
+			// n == 0.
 			if err == io.EOF {
 				return nil
 			}
 			if err != io.ErrUnexpectedEOF {
 				return err
 			}
-			// n > 0
+			// n > 0.
 			loop = false
 		}
 		block = buffer[:n]
@@ -147,7 +151,10 @@ func (r *RSync) ApplyDelta(alignedTarget io.Writer, target io.ReadSeeker, ops ch
 }
 
 // Create the operation list to mutate the target signature into the source.
-func (r *RSync) CreateDelta(source io.Reader, signature []BlockHash, ops chan Operation) error {
+// Any data operation from the OperationWriter must have the data copied out
+// within the span of the function; the data buffer underlying the operation
+// data is reused.
+func (r *RSync) CreateDelta(source io.Reader, signature []BlockHash, ops OperationWriter) error {
 	if r.BlockSize <= 0 {
 		r.BlockSize = DefaultBlockSize
 	}
@@ -159,7 +166,6 @@ func (r *RSync) CreateDelta(source io.Reader, signature []BlockHash, ops chan Op
 	}
 	// A single β hashes may correlate with a many unique hashes.
 	hashLookup := make(map[uint32][]BlockHash, len(signature))
-	defer close(ops)
 	for _, h := range signature {
 		key := h.WeakHash
 		hashLookup[key] = append(hashLookup[key], h)
@@ -172,24 +178,36 @@ func (r *RSync) CreateDelta(source io.Reader, signature []BlockHash, ops chan Op
 
 	var err error
 	var data, sum section
-	var n, validTo, prevValidTo int
+	var n, validTo int
 	var αPop, αPush, β, β1, β2 uint32
 	var blockIndex uint64
 	var rolling, lastRun, foundHash bool
 
-	var buffer = make([]byte, (r.BlockSize*5)+r.MaxDataOp)
+	var buffer = make([]byte, (r.BlockSize*2)+(r.MaxDataOp))
 
 	for !lastRun {
-		// First check for any data segments which have wrapped.
+		// Determine if the buffer should be extended.
 		if sum.tail+r.BlockSize > validTo {
+			// Determine if the buffer should be wrapped.
 			if validTo+r.BlockSize > len(buffer) {
-				// Before wrapping the buffer, record the previous valid data section.
-				prevValidTo = validTo
+				// Before wrapping the buffer, send any trailing data off.
+				if data.tail < data.head {
+					err = ops(Operation{Type: DATA, Data: buffer[data.tail:data.head]})
+					if err != nil {
+						return err
+					}
+				}
+				// Wrap the buffer.
+				l := validTo - sum.tail
+				copy(buffer[:l], buffer[sum.tail:validTo])
 
-				// Now wrap the buffer.
-				validTo = 0
+				// Reset indexes.
+				validTo = l
 				sum.tail = 0
+				data.head = 0
+				data.tail = 0
 			}
+
 			n, err = io.ReadAtLeast(source, buffer[validTo:validTo+r.BlockSize], r.BlockSize)
 			validTo += n
 			if err != nil {
@@ -198,19 +216,18 @@ func (r *RSync) CreateDelta(source io.Reader, signature []BlockHash, ops chan Op
 				}
 				lastRun = true
 
-				// May trigger "data wrap".
 				data.head = validTo
 			}
 			if n == 0 {
 				break
 			}
 		}
-		if data.tail > data.head {
-			ops <- Operation{Type: DATA, Data: buffer[data.tail:prevValidTo]}
-			data.tail = 0
-		}
+
+		// Set the hash sum window head. Must either be a block size
+		// or be at the end of the buffer.
 		sum.head = min(sum.tail+r.BlockSize, validTo)
 
+		// Compute the rolling hash.
 		if !rolling {
 			β, β1, β2 = βhash(buffer[sum.tail:sum.head])
 			rolling = true
@@ -220,25 +237,40 @@ func (r *RSync) CreateDelta(source io.Reader, signature []BlockHash, ops chan Op
 			β2 = (β2 - uint32(sum.head-sum.tail)*αPop + β1) % _M
 			β = β1 + _M*β2
 		}
+
+		// Determine if there is a hash match.
 		foundHash = false
 		if hh, ok := hashLookup[β]; ok && !lastRun {
 			blockIndex, foundHash = findUniqueHash(hh, r.uniqueHash(buffer[sum.tail:sum.head]))
 		}
+		// Send data off if there is data available and a hash is found (so the buffer before it
+		// must be flushed first), or the data chunk size has reached it's maximum size (for buffer
+		// allocation purposes) or to flush the end of the data.
 		if data.tail < data.head && (foundHash || data.head-data.tail >= r.MaxDataOp || lastRun) {
-			ops <- Operation{Type: DATA, Data: buffer[data.tail:data.head]}
+			err = ops(Operation{Type: DATA, Data: buffer[data.tail:data.head]})
+			if err != nil {
+				return err
+			}
 			data.tail = data.head
 		}
+
 		if foundHash {
-			ops <- Operation{Type: BLOCK, BlockIndex: blockIndex}
-			data.tail = sum.head
+			err = ops(Operation{Type: BLOCK, BlockIndex: blockIndex})
+			if err != nil {
+				return err
+			}
 			rolling = false
 			sum.tail += r.BlockSize
 
+			// There is prior knowledge that any available data
+			// buffered will have already been sent. Thus we can
+			// assume data.head and data.tail are the same.
 			// May trigger "data wrap".
 			data.head = sum.tail
+			data.tail = sum.tail
 		} else {
 			// The following is for the next loop iteration, so don't try to calculate if last.
-			if !lastRun {
+			if !lastRun && rolling {
 				αPop = uint32(buffer[sum.tail])
 			}
 			sum.tail += 1
@@ -271,11 +303,11 @@ func findUniqueHash(hh []BlockHash, hashValue []byte) (uint64, bool) {
 }
 
 // Use a faster way to identify a set of bytes.
-func βhash(v []byte) (β uint32, β1 uint32, β2 uint32) {
+func βhash(block []byte) (β uint32, β1 uint32, β2 uint32) {
 	var a, b uint32
-	for i := range v {
-		a += uint32(v[i])
-		b += (uint32(len(v)-1) - uint32(i) + 1) * uint32(v[i])
+	for i, val := range block {
+		a += uint32(val)
+		b += (uint32(len(block)-1) - uint32(i) + 1) * uint32(val)
 	}
 	β = (a % _M) + (_M * (b % _M))
 	β1 = a % _M

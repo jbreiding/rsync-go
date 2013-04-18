@@ -60,6 +60,7 @@ func printHelp() {
 func getRsync() *rsync.RSync {
 	return &rsync.RSync{
 		BlockSize: 1024 * 6,
+		// UniqueHasher: blake2b.New256(),
 	}
 }
 
@@ -120,16 +121,12 @@ func delta(signature, newfile, delta string) error {
 		hl = append(hl, bl)
 	}
 
-	ops := make(chan rsync.Operation)
 	// Save operations to file.
 	opsEncode := gob.NewEncoder(deltaFile)
-	go func() {
-		for op := range ops {
-			opsEncode.Encode(op)
-		}
-	}()
 
-	return rs.CreateDelta(nfFile, hl, ops)
+	return rs.CreateDelta(nfFile, hl, func(op rsync.Operation) error {
+		return opsEncode.Encode(op)
+	})
 }
 
 func patch(basis, delta, newfile string) error {
