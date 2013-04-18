@@ -18,6 +18,8 @@ import (
 	// "github.com/dchest/blake2b"
 )
 
+var blockSizeKiB = flag.Int("block", 6, "Block size in KiB")
+
 func main() {
 	flag.Parse()
 
@@ -27,6 +29,13 @@ func main() {
 		printHelp()
 		os.Exit(1)
 	}
+
+	if *blockSizeKiB <= 0 {
+		log.Printf("Error: Invalid block size.")
+		printHelp()
+		os.Exit(1)
+	}
+
 	var err error
 	switch verb {
 	case "signature":
@@ -49,17 +58,18 @@ func main() {
 }
 func printHelp() {
 	fmt.Printf(`
-%s signature BASIS SIGNATURE
-%s delta SIGNATURE NEWFILE DELTA
-%s patch BASIS DELTA NEWFILE
-%s test BASIS BASISv2
+%s [options] signature BASIS SIGNATURE
+%s [options] delta SIGNATURE NEWFILE DELTA
+%s [options] patch BASIS DELTA NEWFILE
+%s [options] test BASIS BASISv2
 `, os.Args[0], os.Args[0], os.Args[0], os.Args[0])
 	flag.PrintDefaults()
 }
 
 func getRsync() *rsync.RSync {
 	return &rsync.RSync{
-		BlockSize: 1024 * 6,
+		BlockSize: 1024 * *blockSizeKiB,
+		MaxDataOp: 1024 * 1024,
 		// UniqueHasher: blake2b.New256(),
 	}
 }
