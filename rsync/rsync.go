@@ -13,11 +13,8 @@ import (
 	"crypto/md5"
 	"hash"
 	"io"
-
-	// "log"
 )
 
-// 3782
 // If no BlockSize is specified in the RSync instance, this value is used.
 const DefaultBlockSize = 1024 * 6
 const DefaultMaxDataOp = DefaultBlockSize * 10
@@ -53,12 +50,16 @@ type SignatureWriter func(bl BlockHash) error
 type OperationWriter func(op Operation) error
 
 // Properties to use while working with the rsync algorithm.
+// A single RSync should not be used concurrently as it may contain
+// internal buffers and hash sums.
 type RSync struct {
 	BlockSize int
 	MaxDataOp int
 
 	// If this is nil an MD5 hash is used.
 	UniqueHasher hash.Hash
+
+	buffer []byte
 }
 
 // If the target length is known the number of hashes in the
@@ -84,7 +85,13 @@ func (r *RSync) CreateSignature(target io.Reader, sw SignatureWriter) error {
 	}
 	var err error
 	var n int
-	buffer := make([]byte, r.BlockSize)
+
+	minBufferSize := r.BlockSize
+	if len(r.buffer) < minBufferSize {
+		r.buffer = make([]byte, minBufferSize)
+	}
+	buffer := r.buffer
+
 	var block []byte
 	loop := true
 	var index uint64
@@ -112,7 +119,7 @@ func (r *RSync) CreateSignature(target io.Reader, sw SignatureWriter) error {
 	return nil
 }
 
-// Apply the difference to the target.
+// Apply the difference to the target. If alignedTargetSum is present the alignedTarget content will be written to it.
 func (r *RSync) ApplyDelta(alignedTarget io.Writer, target io.ReadSeeker, ops chan Operation, alignedTargetSum hash.Hash) error {
 	if r.BlockSize <= 0 {
 		r.BlockSize = DefaultBlockSize
@@ -121,7 +128,11 @@ func (r *RSync) ApplyDelta(alignedTarget io.Writer, target io.ReadSeeker, ops ch
 	var n int
 	var block []byte
 
-	buffer := make([]byte, r.BlockSize)
+	minBufferSize := r.BlockSize
+	if len(r.buffer) < minBufferSize {
+		r.buffer = make([]byte, minBufferSize)
+	}
+	buffer := r.buffer
 
 	for op := range ops {
 		switch op.Type {
@@ -172,6 +183,12 @@ func (r *RSync) CreateDelta(source io.Reader, signature []BlockHash, ops Operati
 	if r.UniqueHasher == nil {
 		r.UniqueHasher = md5.New()
 	}
+	minBufferSize := (r.BlockSize * 2) + (r.MaxDataOp)
+	if len(r.buffer) < minBufferSize {
+		r.buffer = make([]byte, minBufferSize)
+	}
+	buffer := r.buffer
+
 	// A single β hashes may correlate with a many unique hashes.
 	hashLookup := make(map[uint32][]BlockHash, len(signature))
 	for _, h := range signature {
@@ -190,8 +207,6 @@ func (r *RSync) CreateDelta(source io.Reader, signature []BlockHash, ops Operati
 	var αPop, αPush, β, β1, β2 uint32
 	var blockIndex uint64
 	var rolling, lastRun, foundHash bool
-
-	var buffer = make([]byte, (r.BlockSize*2)+(r.MaxDataOp))
 
 	for !lastRun {
 		// Determine if the buffer should be extended.

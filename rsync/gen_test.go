@@ -110,16 +110,14 @@ func Test_GenData(t *testing.T) {
 			Description: "Source and target both smaller then a block size.",
 		},
 	}
+	rs := &RSync{}
+	rsDelta := &RSync{}
 	for _, p := range pairs {
 		(&p.Source).Fill()
 		(&p.Target).Fill()
 
 		sourceBuffer := bytes.NewReader(p.Source.Data)
 		targetBuffer := bytes.NewReader(p.Target.Data)
-
-		rs := &RSync{
-		// UniqueHasher: blake2b.New256(),
-		}
 
 		sig := make([]BlockHash, 0, 10)
 		err := rs.CreateSignature(targetBuffer, func(bl BlockHash) error {
@@ -133,7 +131,7 @@ func Test_GenData(t *testing.T) {
 		go func() {
 			var blockCt, dataCt, bytes int
 			defer close(opsOut)
-			err := rs.CreateDelta(sourceBuffer, sig, func(op Operation) error {
+			err := rsDelta.CreateDelta(sourceBuffer, sig, func(op Operation) error {
 				switch op.Type {
 				case BLOCK:
 					blockCt++
