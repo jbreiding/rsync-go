@@ -13,6 +13,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"hash"
 	"io"
 	"log"
 	"os"
@@ -20,12 +21,13 @@ import (
 	// "github.com/dchest/blake2b"
 )
 
-var NoTargetSumError = errors.New("Missing target hash")
+var NoTargetSumError = errors.New("Checksum request but missing target hash.")
 var HashNoMatchError = errors.New("Final data hash does not match.")
 
 var fl = flag.NewFlagSet("rdiff", flag.ContinueOnError)
 
 var blockSizeKiB = fl.Int("block", 6, "Block size in KiB")
+var checkFile = fl.Bool("check", true, "Verify file with checksum")
 
 func main() {
 	var err error
@@ -158,17 +160,24 @@ func delta(signature, newfile, delta string) error {
 	if err != nil {
 		return err
 	}
-	hasher := md5.New()
+
+	var hasher hash.Hash
+	if *checkFile {
+		hasher = md5.New()
+	}
 	err = rs.CreateDelta(nfFile, hl, func(op rsync.Operation) error {
 		return opsEncode.Encode(op)
 	}, hasher)
 	if err != nil {
 		return err
 	}
-	return opsEncode.Encode(rsync.Operation{
-		Type: rsync.HASH,
-		Data: hasher.Sum(nil),
-	})
+	if *checkFile {
+		return opsEncode.Encode(rsync.Operation{
+			Type: rsync.HASH,
+			Data: hasher.Sum(nil),
+		})
+	}
+	return nil
 }
 
 func patch(basis, delta, newfile string) error {
@@ -224,13 +233,19 @@ func patch(basis, delta, newfile string) error {
 		}
 	}()
 
-	hasher := md5.New()
+	var hasher hash.Hash
+	if *checkFile {
+		hasher = md5.New()
+	}
 	err = rs.ApplyDelta(fsFile, basisFile, ops, hasher)
 	if err != nil {
 		return err
 	}
 	if decodeError != nil {
 		return decodeError
+	}
+	if *checkFile == false {
+		return nil
 	}
 	if sourceSum == nil {
 		return NoTargetSumError
