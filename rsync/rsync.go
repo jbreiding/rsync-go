@@ -31,6 +31,7 @@ type OpType byte
 const (
 	BLOCK OpType = iota
 	DATA
+	HASH
 )
 
 // Instruction to mutate target to align to source.
@@ -112,7 +113,7 @@ func (r *RSync) CreateSignature(target io.Reader, sw SignatureWriter) error {
 }
 
 // Apply the difference to the target.
-func (r *RSync) ApplyDelta(alignedTarget io.Writer, target io.ReadSeeker, ops chan Operation) error {
+func (r *RSync) ApplyDelta(alignedTarget io.Writer, target io.ReadSeeker, ops chan Operation, alignedTargetSum hash.Hash) error {
 	if r.BlockSize <= 0 {
 		r.BlockSize = DefaultBlockSize
 	}
@@ -136,11 +137,17 @@ func (r *RSync) ApplyDelta(alignedTarget io.Writer, target io.ReadSeeker, ops ch
 				}
 			}
 			block = buffer[:n]
+			if alignedTargetSum != nil {
+				alignedTargetSum.Write(block)
+			}
 			_, err = alignedTarget.Write(block)
 			if err != nil {
 				return err
 			}
 		case DATA:
+			if alignedTargetSum != nil {
+				alignedTargetSum.Write(op.Data)
+			}
 			_, err = alignedTarget.Write(op.Data)
 			if err != nil {
 				return err
@@ -153,8 +160,9 @@ func (r *RSync) ApplyDelta(alignedTarget io.Writer, target io.ReadSeeker, ops ch
 // Create the operation list to mutate the target signature into the source.
 // Any data operation from the OperationWriter must have the data copied out
 // within the span of the function; the data buffer underlying the operation
-// data is reused.
-func (r *RSync) CreateDelta(source io.Reader, signature []BlockHash, ops OperationWriter) error {
+// data is reused. The sourceSum create a complete hash sum of the source if
+// present.
+func (r *RSync) CreateDelta(source io.Reader, signature []BlockHash, ops OperationWriter, sourceSum hash.Hash) error {
 	if r.BlockSize <= 0 {
 		r.BlockSize = DefaultBlockSize
 	}
@@ -209,6 +217,9 @@ func (r *RSync) CreateDelta(source io.Reader, signature []BlockHash, ops Operati
 			}
 
 			n, err = io.ReadAtLeast(source, buffer[validTo:validTo+r.BlockSize], r.BlockSize)
+			if sourceSum != nil {
+				sourceSum.Write(buffer[validTo : validTo+n])
+			}
 			validTo += n
 			if err != nil {
 				if err != io.EOF && err != io.ErrUnexpectedEOF {

@@ -7,23 +7,35 @@ package main
 import (
 	"bitbucket.org/kardianos/rdiff/rsync"
 
+	"bytes"
+	"crypto/md5"
 	"encoding/gob"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
 	"log"
 	"os"
 	"strings"
-
 	// "github.com/dchest/blake2b"
 )
 
-var blockSizeKiB = flag.Int("block", 6, "Block size in KiB")
+var NoTargetSumError = errors.New("Missing target hash")
+var HashNoMatchError = errors.New("Final data hash does not match.")
+
+var fl = flag.NewFlagSet("rdiff", flag.ContinueOnError)
+
+var blockSizeKiB = fl.Int("block", 6, "Block size in KiB")
 
 func main() {
-	flag.Parse()
+	var err error
+	err = fl.Parse(os.Args[1:])
+	if err != nil {
+		printHelp()
+		os.Exit(1)
+	}
 
-	var verb = strings.ToLower(flag.Arg(0))
+	var verb = strings.ToLower(fl.Arg(0))
 	if len(verb) == 0 {
 		log.Printf("Error: Must provide a verb.")
 		printHelp()
@@ -36,23 +48,22 @@ func main() {
 		os.Exit(1)
 	}
 
-	var err error
 	switch verb {
 	case "signature":
-		err = signature(flag.Arg(1), flag.Arg(2))
+		err = signature(fl.Arg(1), fl.Arg(2))
 	case "delta":
-		err = delta(flag.Arg(1), flag.Arg(2), flag.Arg(3))
+		err = delta(fl.Arg(1), fl.Arg(2), fl.Arg(3))
 	case "patch":
-		err = patch(flag.Arg(1), flag.Arg(2), flag.Arg(3))
+		err = patch(fl.Arg(1), fl.Arg(2), fl.Arg(3))
 	case "test":
-		err = test(flag.Arg(1), flag.Arg(2))
+		err = test(fl.Arg(1), fl.Arg(2))
 	default:
 		log.Printf("Error: Unrecognized verb: %s", verb)
 		printHelp()
 		os.Exit(1)
 	}
 	if err != nil {
-		log.Printf("Error running %s: %s", verb, err)
+		log.Printf("Error in %s: %s", verb, err)
 		os.Exit(2)
 	}
 }
@@ -63,7 +74,7 @@ func printHelp() {
 %s [options] patch BASIS DELTA NEWFILE
 %s [options] test BASIS BASISv2
 `, os.Args[0], os.Args[0], os.Args[0], os.Args[0])
-	flag.PrintDefaults()
+	fl.PrintDefaults()
 }
 
 func getRsync() *rsync.RSync {
@@ -89,7 +100,10 @@ func signature(basis, signature string) error {
 	defer sigFile.Close()
 
 	sigEncode := gob.NewEncoder(sigFile)
-
+	err = sigEncode.Encode(rs.BlockSize)
+	if err != nil {
+		return err
+	}
 	return rs.CreateSignature(basisFile, func(block rsync.BlockHash) error {
 		// Save signature hash list to file.
 		return sigEncode.Encode(block)
@@ -119,6 +133,13 @@ func delta(signature, newfile, delta string) error {
 	// Load signature hash list.
 	hl := make([]rsync.BlockHash, 0)
 	sigDecode := gob.NewDecoder(sigFile)
+	err = sigDecode.Decode(&rs.BlockSize)
+	if err != nil {
+		if err == io.EOF {
+			return io.ErrUnexpectedEOF
+		}
+		return err
+	}
 	for {
 		bl := rsync.BlockHash{}
 		err = sigDecode.Decode(&bl)
@@ -133,9 +154,20 @@ func delta(signature, newfile, delta string) error {
 
 	// Save operations to file.
 	opsEncode := gob.NewEncoder(deltaFile)
-
-	return rs.CreateDelta(nfFile, hl, func(op rsync.Operation) error {
+	err = opsEncode.Encode(rs.BlockSize)
+	if err != nil {
+		return err
+	}
+	hasher := md5.New()
+	err = rs.CreateDelta(nfFile, hl, func(op rsync.Operation) error {
 		return opsEncode.Encode(op)
+	}, hasher)
+	if err != nil {
+		return err
+	}
+	return opsEncode.Encode(rsync.Operation{
+		Type: rsync.HASH,
+		Data: hasher.Sum(nil),
 	})
 }
 
@@ -159,12 +191,21 @@ func patch(basis, delta, newfile string) error {
 	}
 	defer fsFile.Close()
 
+	var sourceSum []byte
+	deltaDecode := gob.NewDecoder(deltaFile)
+	err = deltaDecode.Decode(&rs.BlockSize)
+	if err != nil {
+		if err == io.EOF {
+			return io.ErrUnexpectedEOF
+		}
+		return err
+	}
+
 	ops := make(chan rsync.Operation)
 	// Load operations from file.
 	var decodeError error
 	go func() {
 		defer close(ops)
-		deltaDecode := gob.NewDecoder(deltaFile)
 		for {
 			op := rsync.Operation{}
 			err = deltaDecode.Decode(&op)
@@ -175,17 +216,29 @@ func patch(basis, delta, newfile string) error {
 				decodeError = err
 				return
 			}
+			if op.Type == rsync.HASH {
+				sourceSum = op.Data
+				continue
+			}
 			ops <- op
 		}
 	}()
 
-	err = rs.ApplyDelta(fsFile, basisFile, ops)
+	hasher := md5.New()
+	err = rs.ApplyDelta(fsFile, basisFile, ops, hasher)
 	if err != nil {
 		return err
 	}
 	if decodeError != nil {
 		return decodeError
 	}
+	if sourceSum == nil {
+		return NoTargetSumError
+	}
+	if bytes.Equal(sourceSum, hasher.Sum(nil)) == false {
+		return HashNoMatchError
+	}
+
 	return nil
 }
 
@@ -212,8 +265,7 @@ func test(basis1, basis2 string) error {
 	}
 
 	if basis1Stat.Size() != basis2Stat.Size() {
-		log.Printf("FAIL: File size different.")
-		return nil
+		return fmt.Errorf("File size different.")
 	}
 
 	type resetBuffer struct {
@@ -224,6 +276,7 @@ func test(basis1, basis2 string) error {
 
 	b1Source := make(chan resetBuffer, 10)
 	b2Source := make(chan resetBuffer, 10)
+	errorSource := make(chan error, 4)
 
 	for i := 0; i < cap(bufferFount); i++ {
 		b := make([]byte, 32*1024)
@@ -234,7 +287,7 @@ func test(basis1, basis2 string) error {
 		}
 	}
 
-	reader := func(f io.Reader, source chan resetBuffer) {
+	reader := func(f io.Reader, source chan resetBuffer, errorSource chan error) {
 		for {
 			buffer := <-bufferFount
 			buffer.buf = buffer.orig
@@ -250,19 +303,23 @@ func test(basis1, basis2 string) error {
 					close(source)
 					return
 				}
-				log.Fatalf("Error reading file: %s", err)
+				errorSource <- fmt.Errorf("Error reading file: %s", err)
+				return
 			}
 		}
 	}
 
-	go reader(basis1File, b1Source)
-	go reader(basis2File, b2Source)
+	go reader(basis1File, b1Source, errorSource)
+	go reader(basis2File, b2Source, errorSource)
 
 	location := 0
 	var b1Buffer resetBuffer
 	var b2Buffer resetBuffer
 	var ok bool
 	for {
+		if len(errorSource) > 0 {
+			return <-errorSource
+		}
 		if len(b1Buffer.buf) == 0 {
 			if b1Buffer.buf != nil {
 				bufferFount <- b1Buffer
@@ -285,8 +342,7 @@ func test(basis1, basis2 string) error {
 
 		for i := 0; i < size; i++ {
 			if b1Buffer.buf[i] != b2Buffer.buf[i] {
-				log.Printf("FAIL: Bytes differ at %d.", location)
-				return nil
+				return fmt.Errorf("FAIL: Bytes differ at %d.", location)
 			}
 			location++
 		}
