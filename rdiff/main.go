@@ -5,7 +5,7 @@
 package main
 
 import (
-	"bitbucket.org/kardianos/rdiff/rsync"
+	"bitbucket.org/kardianos/rsync"
 
 	"bytes"
 	"crypto/md5"
