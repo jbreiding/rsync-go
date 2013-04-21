@@ -18,7 +18,6 @@ import (
 	"log"
 	"os"
 	"strings"
-	// "github.com/dchest/blake2b"
 )
 
 var NoTargetSumError = errors.New("Checksum request but missing target hash.")
@@ -83,7 +82,6 @@ func getRsync() *rsync.RSync {
 	return &rsync.RSync{
 		BlockSize: 1024 * *blockSizeKiB,
 		MaxDataOp: 1024 * 1024,
-		// UniqueHasher: blake2b.New256(),
 	}
 }
 
