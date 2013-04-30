@@ -1,7 +1,7 @@
 // RDiff clone.
 //
 // A replacement for the aging http://librsync.sourcefrog.net
-// rdiff utility.
+// rdiff utility. By default will gzip the delta file.
 package main
 
 import (
@@ -9,7 +9,6 @@ import (
 
 	"bytes"
 	"crypto/md5"
-	"encoding/gob"
 	"errors"
 	"flag"
 	"fmt"
@@ -18,6 +17,8 @@ import (
 	"log"
 	"os"
 	"strings"
+
+	"bitbucket.org/kardianos/rsync/proto"
 )
 
 var NoTargetSumError = errors.New("Checksum request but missing target hash.")
@@ -99,15 +100,15 @@ func signature(basis, signature string) error {
 	}
 	defer sigFile.Close()
 
-	sigEncode := gob.NewEncoder(sigFile)
-	err = sigEncode.Encode(rs.BlockSize)
+	sigEncode := &proto.Writer{Writer: sigFile}
+
+	err = sigEncode.Header(proto.TypeSignature, proto.CompNone, rs.BlockSize)
 	if err != nil {
 		return err
 	}
-	return rs.CreateSignature(basisFile, func(block rsync.BlockHash) error {
-		// Save signature hash list to file.
-		return sigEncode.Encode(block)
-	})
+	defer sigEncode.Close()
+
+	return rs.CreateSignature(basisFile, sigEncode.SignatureWriter())
 }
 
 func delta(signature, newfile, delta string) error {
@@ -131,46 +132,40 @@ func delta(signature, newfile, delta string) error {
 	defer deltaFile.Close()
 
 	// Load signature hash list.
-	hl := make([]rsync.BlockHash, 0)
-	sigDecode := gob.NewDecoder(sigFile)
-	err = sigDecode.Decode(&rs.BlockSize)
+	sigDecode := &proto.Reader{Reader: sigFile}
+	rs.BlockSize, err = sigDecode.Header(proto.TypeSignature)
 	if err != nil {
 		if err == io.EOF {
 			return io.ErrUnexpectedEOF
 		}
 		return err
 	}
-	for {
-		bl := rsync.BlockHash{}
-		err = sigDecode.Decode(&bl)
-		if err == io.EOF {
-			break
-		}
-		if err != nil {
-			return err
-		}
-		hl = append(hl, bl)
-	}
+	defer sigDecode.Close()
 
-	// Save operations to file.
-	opsEncode := gob.NewEncoder(deltaFile)
-	err = opsEncode.Encode(rs.BlockSize)
+	hl, err := sigDecode.ReadAllSignatures()
 	if err != nil {
 		return err
 	}
+
+	// Save operations to file.
+	opsEncode := &proto.Writer{Writer: deltaFile}
+	err = opsEncode.Header(proto.TypeDelta, proto.CompGZip, rs.BlockSize)
+	if err != nil {
+		return err
+	}
+	defer opsEncode.Close()
 
 	var hasher hash.Hash
 	if *checkFile {
 		hasher = md5.New()
 	}
-	err = rs.CreateDelta(nfFile, hl, func(op rsync.Operation) error {
-		return opsEncode.Encode(op)
-	}, hasher)
+	opF := opsEncode.OperationWriter()
+	err = rs.CreateDelta(nfFile, hl, opF, hasher)
 	if err != nil {
 		return err
 	}
 	if *checkFile {
-		return opsEncode.Encode(rsync.Operation{
+		return opF(rsync.Operation{
 			Type: rsync.HASH,
 			Data: hasher.Sum(nil),
 		})
@@ -198,37 +193,23 @@ func patch(basis, delta, newfile string) error {
 	}
 	defer fsFile.Close()
 
-	var sourceSum []byte
-	deltaDecode := gob.NewDecoder(deltaFile)
-	err = deltaDecode.Decode(&rs.BlockSize)
+	deltaDecode := proto.Reader{Reader: deltaFile}
+	rs.BlockSize, err = deltaDecode.Header(proto.TypeDelta)
 	if err != nil {
 		if err == io.EOF {
 			return io.ErrUnexpectedEOF
 		}
 		return err
 	}
+	defer deltaDecode.Close()
 
+	hashOps := make(chan rsync.Operation, 2)
 	ops := make(chan rsync.Operation)
 	// Load operations from file.
 	var decodeError error
 	go func() {
 		defer close(ops)
-		for {
-			op := rsync.Operation{}
-			err = deltaDecode.Decode(&op)
-			if err == io.EOF {
-				break
-			}
-			if err != nil {
-				decodeError = err
-				return
-			}
-			if op.Type == rsync.HASH {
-				sourceSum = op.Data
-				continue
-			}
-			ops <- op
-		}
+		decodeError = deltaDecode.ReadOperations(ops, hashOps)
 	}()
 
 	var hasher hash.Hash
@@ -245,10 +226,11 @@ func patch(basis, delta, newfile string) error {
 	if *checkFile == false {
 		return nil
 	}
-	if sourceSum == nil {
+	hashOp := <-hashOps
+	if hashOp.Data == nil {
 		return NoTargetSumError
 	}
-	if bytes.Equal(sourceSum, hasher.Sum(nil)) == false {
+	if bytes.Equal(hashOp.Data, hasher.Sum(nil)) == false {
 		return HashNoMatchError
 	}
 
