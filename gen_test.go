@@ -133,9 +133,9 @@ func Test_GenData(t *testing.T) {
 			defer close(opsOut)
 			err := rsDelta.CreateDelta(sourceBuffer, sig, func(op Operation) error {
 				switch op.Type {
-				case BLOCK:
+				case OpBlock:
 					blockCt++
-				case DATA:
+				case OpData:
 					// Copy data buffer so it may be reused in internal buffer.
 					b := make([]byte, len(op.Data))
 					copy(b, op.Data)

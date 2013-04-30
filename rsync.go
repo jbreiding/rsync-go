@@ -26,9 +26,9 @@ const _M = 1 << 16
 type OpType byte
 
 const (
-	BLOCK OpType = iota
-	DATA
-	HASH
+	OpBlock OpType = iota
+	OpData
+	OpHash
 )
 
 // Instruction to mutate target to align to source.
@@ -136,7 +136,7 @@ func (r *RSync) ApplyDelta(alignedTarget io.Writer, target io.ReadSeeker, ops ch
 
 	for op := range ops {
 		switch op.Type {
-		case BLOCK:
+		case OpBlock:
 			target.Seek(int64(r.BlockSize*int(op.BlockIndex)), 0)
 			n, err = io.ReadAtLeast(target, buffer, r.BlockSize)
 			if err != nil {
@@ -155,7 +155,7 @@ func (r *RSync) ApplyDelta(alignedTarget io.Writer, target io.ReadSeeker, ops ch
 			if err != nil {
 				return err
 			}
-		case DATA:
+		case OpData:
 			if alignedTargetSum != nil {
 				alignedTargetSum.Write(op.Data)
 			}
@@ -215,7 +215,7 @@ func (r *RSync) CreateDelta(source io.Reader, signature []BlockHash, ops Operati
 			if validTo+r.BlockSize > len(buffer) {
 				// Before wrapping the buffer, send any trailing data off.
 				if data.tail < data.head {
-					err = ops(Operation{Type: DATA, Data: buffer[data.tail:data.head]})
+					err = ops(Operation{Type: OpData, Data: buffer[data.tail:data.head]})
 					if err != nil {
 						return err
 					}
@@ -273,7 +273,7 @@ func (r *RSync) CreateDelta(source io.Reader, signature []BlockHash, ops Operati
 		// must be flushed first), or the data chunk size has reached it's maximum size (for buffer
 		// allocation purposes) or to flush the end of the data.
 		if data.tail < data.head && (foundHash || data.head-data.tail >= r.MaxDataOp || lastRun) {
-			err = ops(Operation{Type: DATA, Data: buffer[data.tail:data.head]})
+			err = ops(Operation{Type: OpData, Data: buffer[data.tail:data.head]})
 			if err != nil {
 				return err
 			}
@@ -281,7 +281,7 @@ func (r *RSync) CreateDelta(source io.Reader, signature []BlockHash, ops Operati
 		}
 
 		if foundHash {
-			err = ops(Operation{Type: BLOCK, BlockIndex: blockIndex})
+			err = ops(Operation{Type: OpBlock, BlockIndex: blockIndex})
 			if err != nil {
 				return err
 			}

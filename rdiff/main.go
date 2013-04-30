@@ -28,6 +28,7 @@ var fl = flag.NewFlagSet("rdiff", flag.ContinueOnError)
 
 var blockSizeKiB = fl.Int("block", 6, "Block size in KiB")
 var checkFile = fl.Bool("check", true, "Verify file with checksum")
+var compressDelta = fl.Bool("zdelta", false, "Compress the delta stream")
 
 func main() {
 	var err error
@@ -147,9 +148,14 @@ func delta(signature, newfile, delta string) error {
 		return err
 	}
 
+	comp := proto.CompNone
+	if *compressDelta {
+		comp = proto.CompGZip
+	}
+
 	// Save operations to file.
 	opsEncode := &proto.Writer{Writer: deltaFile}
-	err = opsEncode.Header(proto.TypeDelta, proto.CompGZip, rs.BlockSize)
+	err = opsEncode.Header(proto.TypeDelta, comp, rs.BlockSize)
 	if err != nil {
 		return err
 	}
@@ -166,7 +172,7 @@ func delta(signature, newfile, delta string) error {
 	}
 	if *checkFile {
 		return opF(rsync.Operation{
-			Type: rsync.HASH,
+			Type: rsync.OpHash,
 			Data: hasher.Sum(nil),
 		})
 	}

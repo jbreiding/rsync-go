@@ -1,4 +1,7 @@
 // Single-Buffer backing for readers.
+//
+// Use when reading from a large Reader when only small defined
+// sequential slices are needed. Uses a single buffer for reading.
 package sbuffer
 
 import (

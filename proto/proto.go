@@ -1,3 +1,4 @@
+// A binary protocol for rsync.
 package proto
 
 import (
@@ -14,6 +15,7 @@ type Type byte
 type Comp byte
 
 const (
+	// Unique key written in every header to identify and confirm the stream.
 	RsyncMagic uint32 = 0x72730136
 )
 
@@ -122,6 +124,8 @@ func readHeader(r io.Reader, expect Type) (blockSize int, compression Comp, err 
 	return
 }
 
+// Write the protocol to a stream by setting the Writer
+// and calling its methods subsequently.
 type Writer struct {
 	io.Writer
 
@@ -137,6 +141,7 @@ func (w *Writer) Close() error {
 	return nil
 }
 
+// The header must be written before any content may be written.
 func (w *Writer) Header(t Type, compression Comp, blockSize int) error {
 	if w.hasHeader {
 		return ErrHeaderOnce
@@ -163,6 +168,8 @@ func (w *Writer) Header(t Type, compression Comp, blockSize int) error {
 	return nil
 }
 
+// Return a signature writer. The call itself does not write anything.
+// Use with a Signature header.
 func (w *Writer) SignatureWriter() rsync.SignatureWriter {
 	if w.t != TypeSignature {
 		// This is a program structure issue, so panic.
@@ -189,6 +196,8 @@ func (w *Writer) SignatureWriter() rsync.SignatureWriter {
 	}
 }
 
+// Return an operation writer. The call itself does not write anything.
+// Use with a Delta header.
 func (w *Writer) OperationWriter() rsync.OperationWriter {
 	if w.t != TypeDelta {
 		// This is a program structure issue, so panic.
@@ -201,15 +210,15 @@ func (w *Writer) OperationWriter() rsync.OperationWriter {
 		buffer[0] = byte(op.Type)
 		n = 1
 		switch op.Type {
-		case rsync.BLOCK:
+		case rsync.OpBlock:
 			n += binary.PutUvarint(buffer[n:], op.BlockIndex)
 			_, err = w.body.Write(buffer[:n])
 			if err != nil {
 				return err
 			}
-		case rsync.HASH:
+		case rsync.OpHash:
 			fallthrough
-		case rsync.DATA:
+		case rsync.OpData:
 			n += binary.PutUvarint(buffer[n:], uint64(len(op.Data)))
 			_, err = w.body.Write(buffer[:n])
 			if err != nil {
@@ -226,6 +235,7 @@ func (w *Writer) OperationWriter() rsync.OperationWriter {
 	}
 }
 
+// Initialize by setting the Reader. Call Header to initialize stream.
 type Reader struct {
 	io.Reader
 
@@ -369,7 +379,7 @@ func (r *Reader) ReadOperations(ops chan rsync.Operation, hashOps chan rsync.Ope
 
 		at = 1
 		switch op.Type {
-		case rsync.BLOCK:
+		case rsync.OpBlock:
 			v, n = binary.Uvarint(buff[at:])
 			if n <= 0 {
 				panic(ErrBadVarintRead)
@@ -377,9 +387,9 @@ func (r *Reader) ReadOperations(ops chan rsync.Operation, hashOps chan rsync.Ope
 			at += n
 			op.BlockIndex = v
 			reader.Used(at)
-		case rsync.HASH:
+		case rsync.OpHash:
 			fallthrough
-		case rsync.DATA:
+		case rsync.OpData:
 			v, n = binary.Uvarint(buff[at:])
 			if n <= 0 {
 				panic(ErrBadVarintRead)
@@ -405,7 +415,7 @@ func (r *Reader) ReadOperations(ops chan rsync.Operation, hashOps chan rsync.Ope
 			reader.Used(dataLen)
 		}
 
-		if op.Type == rsync.HASH {
+		if op.Type == rsync.OpHash {
 			hashOps <- op
 		} else {
 			ops <- op
