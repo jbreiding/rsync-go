@@ -14,7 +14,6 @@ import (
 	"fmt"
 	"hash"
 	"io"
-	"log"
 	"os"
 	"strings"
 
@@ -24,15 +23,18 @@ import (
 var NoTargetSumError = errors.New("Checksum request but missing target hash.")
 var HashNoMatchError = errors.New("Final data hash does not match.")
 
-var fl = flag.NewFlagSet("rdiff", flag.ContinueOnError)
-
-var blockSizeKiB = fl.Int("block", 6, "Block size in KiB")
-var checkFile = fl.Bool("check", true, "Verify file with checksum")
-var compressDelta = fl.Bool("zdelta", false, "Compress the delta stream")
+var fl = flag.NewFlagSet("rdiff", flag.ExitOnError)
 
 func main() {
 	var err error
+
+	var blockSizeKiB = fl.Int("block", 6, "Block size in KiB")
+	var checkFile = fl.Bool("check", true, "Verify file with checksum")
+	var compressDelta = fl.Bool("zdelta", false, "Compress the delta stream")
+
+	fl.Usage = printHelp
 	err = fl.Parse(os.Args[1:])
+
 	if err != nil {
 		printHelp()
 		os.Exit(1)
@@ -40,38 +42,43 @@ func main() {
 
 	var verb = strings.ToLower(fl.Arg(0))
 	if len(verb) == 0 {
-		log.Printf("Error: Must provide a verb.")
+		fmt.Fprintf(os.Stderr, "Error: Must provide a verb.\n")
 		printHelp()
 		os.Exit(1)
 	}
 
 	if *blockSizeKiB <= 0 {
-		log.Printf("Error: Invalid block size.")
+		fmt.Fprintf(os.Stderr, "Error: Invalid block size.\n")
 		printHelp()
 		os.Exit(1)
 	}
 
+	deltaComp := proto.CompNone
+	if *compressDelta {
+		deltaComp = proto.CompGZip
+	}
+
 	switch verb {
 	case "signature":
-		err = signature(fl.Arg(1), fl.Arg(2))
+		err = signature(fl.Arg(1), fl.Arg(2), *blockSizeKiB)
 	case "delta":
-		err = delta(fl.Arg(1), fl.Arg(2), fl.Arg(3))
+		err = delta(fl.Arg(1), fl.Arg(2), fl.Arg(3), *checkFile, deltaComp)
 	case "patch":
-		err = patch(fl.Arg(1), fl.Arg(2), fl.Arg(3))
+		err = patch(fl.Arg(1), fl.Arg(2), fl.Arg(3), *checkFile)
 	case "test":
 		err = test(fl.Arg(1), fl.Arg(2))
 	default:
-		log.Printf("Error: Unrecognized verb: %s", verb)
+		fmt.Fprintf(os.Stderr, "Error: Unrecognized verb: %s\n", verb)
 		printHelp()
 		os.Exit(1)
 	}
 	if err != nil {
-		log.Printf("Error in %s: %s", verb, err)
+		fmt.Fprintf(os.Stderr, "Error in %s: %s", verb, err)
 		os.Exit(2)
 	}
 }
 func printHelp() {
-	fmt.Printf(`
+	fmt.Fprintf(os.Stderr, `rdiff - delta copy
 %s [options] signature BASIS SIGNATURE
 %s [options] delta SIGNATURE NEWFILE DELTA
 %s [options] patch BASIS DELTA NEWFILE
@@ -82,13 +89,14 @@ func printHelp() {
 
 func getRsync() *rsync.RSync {
 	return &rsync.RSync{
-		BlockSize: 1024 * *blockSizeKiB,
-		MaxDataOp: 1024 * 1024,
+		MaxDataOp: 1024 * 16,
 	}
 }
 
-func signature(basis, signature string) error {
+func signature(basis, signature string, blockSizeKiB int) error {
 	rs := getRsync()
+	rs.BlockSize = 1024 * blockSizeKiB
+
 	basisFile, err := os.Open(basis)
 	if err != nil {
 		return err
@@ -112,7 +120,7 @@ func signature(basis, signature string) error {
 	return rs.CreateSignature(basisFile, sigEncode.SignatureWriter())
 }
 
-func delta(signature, newfile, delta string) error {
+func delta(signature, newfile, delta string, checkFile bool, comp proto.Comp) error {
 	rs := getRsync()
 	sigFile, err := os.Open(signature)
 	if err != nil {
@@ -148,11 +156,6 @@ func delta(signature, newfile, delta string) error {
 		return err
 	}
 
-	comp := proto.CompNone
-	if *compressDelta {
-		comp = proto.CompGZip
-	}
-
 	// Save operations to file.
 	opsEncode := &proto.Writer{Writer: deltaFile}
 	err = opsEncode.Header(proto.TypeDelta, comp, rs.BlockSize)
@@ -162,7 +165,7 @@ func delta(signature, newfile, delta string) error {
 	defer opsEncode.Close()
 
 	var hasher hash.Hash
-	if *checkFile {
+	if checkFile {
 		hasher = md5.New()
 	}
 	opF := opsEncode.OperationWriter()
@@ -170,7 +173,7 @@ func delta(signature, newfile, delta string) error {
 	if err != nil {
 		return err
 	}
-	if *checkFile {
+	if checkFile {
 		return opF(rsync.Operation{
 			Type: rsync.OpHash,
 			Data: hasher.Sum(nil),
@@ -179,7 +182,7 @@ func delta(signature, newfile, delta string) error {
 	return nil
 }
 
-func patch(basis, delta, newfile string) error {
+func patch(basis, delta, newfile string, checkFile bool) error {
 	rs := getRsync()
 	basisFile, err := os.Open(basis)
 	if err != nil {
@@ -219,7 +222,7 @@ func patch(basis, delta, newfile string) error {
 	}()
 
 	var hasher hash.Hash
-	if *checkFile {
+	if checkFile {
 		hasher = md5.New()
 	}
 	err = rs.ApplyDelta(fsFile, basisFile, ops, hasher)
@@ -229,7 +232,7 @@ func patch(basis, delta, newfile string) error {
 	if decodeError != nil {
 		return decodeError
 	}
-	if *checkFile == false {
+	if checkFile == false {
 		return nil
 	}
 	hashOp := <-hashOps
