@@ -216,6 +216,13 @@ func (w *Writer) OperationWriter() rsync.OperationWriter {
 			if err != nil {
 				return err
 			}
+		case rsync.OpBlockRange:
+			n += binary.PutUvarint(buffer[n:], op.BlockIndex)
+			n += binary.PutUvarint(buffer[n:], op.BlockIndexEnd)
+			_, err = w.body.Write(buffer[:n])
+			if err != nil {
+				return err
+			}
 		case rsync.OpHash:
 			fallthrough
 		case rsync.OpData:
@@ -387,6 +394,21 @@ func (r *Reader) ReadOperations(ops chan rsync.Operation, hashOps chan rsync.Ope
 			at += n
 			op.BlockIndex = v
 			reader.Used(at)
+		case rsync.OpBlockRange:
+			v, n = binary.Uvarint(buff[at:])
+			if n <= 0 {
+				panic(ErrBadVarintRead)
+			}
+			at += n
+			op.BlockIndex = v
+
+			v, n = binary.Uvarint(buff[at:])
+			if n <= 0 {
+				panic(ErrBadVarintRead)
+			}
+			at += n
+			op.BlockIndexEnd = v
+			reader.Used(at)
 		case rsync.OpHash:
 			fallthrough
 		case rsync.OpData:
@@ -413,6 +435,8 @@ func (r *Reader) ReadOperations(ops chan rsync.Operation, hashOps chan rsync.Ope
 			copy(op.Data, buff[:dataLen])
 
 			reader.Used(dataLen)
+		default:
+			panic("Unreachable.")
 		}
 
 		if op.Type == rsync.OpHash {

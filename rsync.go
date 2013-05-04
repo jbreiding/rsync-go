@@ -29,13 +29,15 @@ const (
 	OpBlock OpType = iota
 	OpData
 	OpHash
+	OpBlockRange
 )
 
 // Instruction to mutate target to align to source.
 type Operation struct {
-	Type       OpType
-	BlockIndex uint64
-	Data       []byte
+	Type          OpType
+	BlockIndex    uint64
+	BlockIndexEnd uint64
+	Data          []byte
 }
 
 // Signature hash item generated from target.
@@ -134,25 +136,46 @@ func (r *RSync) ApplyDelta(alignedTarget io.Writer, target io.ReadSeeker, ops ch
 	}
 	buffer := r.buffer
 
+	writeBlock := func(op Operation) error {
+		target.Seek(int64(r.BlockSize*int(op.BlockIndex)), 0)
+		n, err = io.ReadAtLeast(target, buffer, r.BlockSize)
+		if err != nil {
+			if err != io.ErrUnexpectedEOF {
+				return err
+			}
+		}
+		block = buffer[:n]
+		if alignedTargetSum != nil {
+			alignedTargetSum.Write(block)
+		}
+		_, err = alignedTarget.Write(block)
+		if err != nil {
+			return err
+		}
+		return nil
+	}
+
 	for op := range ops {
 		switch op.Type {
+		case OpBlockRange:
+			for i := op.BlockIndex; i <= op.BlockIndexEnd; i++ {
+				err = writeBlock(Operation{
+					Type:       OpBlock,
+					BlockIndex: i,
+				})
+				if err != nil {
+					if err == io.EOF {
+						break
+					}
+					return err
+				}
+			}
 		case OpBlock:
-			target.Seek(int64(r.BlockSize*int(op.BlockIndex)), 0)
-			n, err = io.ReadAtLeast(target, buffer, r.BlockSize)
+			err = writeBlock(op)
 			if err != nil {
 				if err == io.EOF {
 					break
 				}
-				if err != io.ErrUnexpectedEOF {
-					return err
-				}
-			}
-			block = buffer[:n]
-			if alignedTargetSum != nil {
-				alignedTargetSum.Write(block)
-			}
-			_, err = alignedTarget.Write(block)
-			if err != nil {
 				return err
 			}
 		case OpData:
@@ -173,7 +196,7 @@ func (r *RSync) ApplyDelta(alignedTarget io.Writer, target io.ReadSeeker, ops ch
 // within the span of the function; the data buffer underlying the operation
 // data is reused. The sourceSum create a complete hash sum of the source if
 // present.
-func (r *RSync) CreateDelta(source io.Reader, signature []BlockHash, ops OperationWriter, sourceSum hash.Hash) error {
+func (r *RSync) CreateDelta(source io.Reader, signature []BlockHash, ops OperationWriter, sourceSum hash.Hash) (err error) {
 	if r.BlockSize <= 0 {
 		r.BlockSize = DefaultBlockSize
 	}
@@ -201,12 +224,63 @@ func (r *RSync) CreateDelta(source io.Reader, signature []BlockHash, ops Operati
 		head int
 	}
 
-	var err error
 	var data, sum section
 	var n, validTo int
 	var αPop, αPush, β, β1, β2 uint32
 	var blockIndex uint64
 	var rolling, lastRun, foundHash bool
+
+	var prevOp *Operation
+	defer func() {
+		if prevOp == nil {
+			return
+		}
+		err = ops(*prevOp)
+		prevOp = nil
+	}()
+
+	enqueue := func(op Operation) (err error) {
+		switch op.Type {
+		case OpBlock:
+			if prevOp != nil {
+				switch prevOp.Type {
+				case OpBlock:
+					if prevOp.BlockIndex+1 == op.BlockIndex {
+						prevOp = &Operation{
+							Type:          OpBlockRange,
+							BlockIndex:    prevOp.BlockIndex,
+							BlockIndexEnd: op.BlockIndex,
+						}
+						return
+					}
+				case OpBlockRange:
+					if prevOp.BlockIndexEnd+1 == op.BlockIndex {
+						prevOp.BlockIndexEnd = op.BlockIndex
+						return
+					}
+				}
+				err = ops(*prevOp)
+				if err != nil {
+					return
+				}
+				prevOp = nil
+			}
+			prevOp = &op
+		case OpData:
+			if prevOp != nil {
+				err = ops(*prevOp)
+				if err != nil {
+					return
+				}
+			}
+			err = ops(op)
+			if err != nil {
+				return
+			}
+			prevOp = nil
+		}
+		return
+	}
 
 	for !lastRun {
 		// Determine if the buffer should be extended.
@@ -215,7 +289,7 @@ func (r *RSync) CreateDelta(source io.Reader, signature []BlockHash, ops Operati
 			if validTo+r.BlockSize > len(buffer) {
 				// Before wrapping the buffer, send any trailing data off.
 				if data.tail < data.head {
-					err = ops(Operation{Type: OpData, Data: buffer[data.tail:data.head]})
+					err = enqueue(Operation{Type: OpData, Data: buffer[data.tail:data.head]})
 					if err != nil {
 						return err
 					}
@@ -273,7 +347,7 @@ func (r *RSync) CreateDelta(source io.Reader, signature []BlockHash, ops Operati
 		// must be flushed first), or the data chunk size has reached it's maximum size (for buffer
 		// allocation purposes) or to flush the end of the data.
 		if data.tail < data.head && (foundHash || data.head-data.tail >= r.MaxDataOp || lastRun) {
-			err = ops(Operation{Type: OpData, Data: buffer[data.tail:data.head]})
+			err = enqueue(Operation{Type: OpData, Data: buffer[data.tail:data.head]})
 			if err != nil {
 				return err
 			}
@@ -281,7 +355,7 @@ func (r *RSync) CreateDelta(source io.Reader, signature []BlockHash, ops Operati
 		}
 
 		if foundHash {
-			err = ops(Operation{Type: OpBlock, BlockIndex: blockIndex})
+			err = enqueue(Operation{Type: OpBlock, BlockIndex: blockIndex})
 			if err != nil {
 				return err
 			}

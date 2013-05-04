@@ -129,10 +129,12 @@ func Test_GenData(t *testing.T) {
 		}
 		opsOut := make(chan Operation)
 		go func() {
-			var blockCt, dataCt, bytes int
+			var blockCt, blockRangeCt, dataCt, bytes int
 			defer close(opsOut)
 			err := rsDelta.CreateDelta(sourceBuffer, sig, func(op Operation) error {
 				switch op.Type {
+				case OpBlockRange:
+					blockRangeCt++
 				case OpBlock:
 					blockCt++
 				case OpData:
@@ -146,7 +148,7 @@ func Test_GenData(t *testing.T) {
 				opsOut <- op
 				return nil
 			}, nil)
-			t.Logf("Block Ops:%5d, Data Ops: %5d, Data Len: %5dKiB, For %s.", blockCt, dataCt, bytes/1024, p.Description)
+			t.Logf("Range Ops:%5d, Block Ops:%5d, Data Ops: %5d, Data Len: %5dKiB, For %s.", blockRangeCt, blockCt, dataCt, bytes/1024, p.Description)
 			if err != nil {
 				t.Errorf("Failed to create delta: %s", err)
 			}
