@@ -230,7 +230,10 @@ func (r *RSync) CreateDelta(source io.Reader, signature []BlockHash, ops Operati
 	var blockIndex uint64
 	var rolling, lastRun, foundHash bool
 
+	// Store the previous non-data operation for combining.
 	var prevOp *Operation
+
+	// Send the last operation if there is one waiting.
 	defer func() {
 		if prevOp == nil {
 			return
@@ -239,6 +242,8 @@ func (r *RSync) CreateDelta(source io.Reader, signature []BlockHash, ops Operati
 		prevOp = nil
 	}()
 
+	// Combine OpBlock into OpBlockRange. To do this store the previous
+	// non-data operation and determine if it can be extended.
 	enqueue := func(op Operation) (err error) {
 		switch op.Type {
 		case OpBlock:
@@ -267,6 +272,7 @@ func (r *RSync) CreateDelta(source io.Reader, signature []BlockHash, ops Operati
 			}
 			prevOp = &op
 		case OpData:
+			// Never save a data operation, as it would corrupt the buffer.
 			if prevOp != nil {
 				err = ops(*prevOp)
 				if err != nil {
