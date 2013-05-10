@@ -313,6 +313,9 @@ func (r *Reader) ReadAllSignatures() ([]rsync.BlockHash, error) {
 			}
 			loop = false
 		}
+		if len(buff) == 0 {
+			break
+		}
 
 		v, n = binary.Uvarint(buff)
 		if n <= 0 {

@@ -24,6 +24,7 @@ var NoTargetSumError = errors.New("Checksum request but missing target hash.")
 var HashNoMatchError = errors.New("Final data hash does not match.")
 
 var fl = flag.NewFlagSet("rdiff", flag.ExitOnError)
+var verbose = fl.Bool("v", false, "Verbose")
 
 func main() {
 	var err error
@@ -154,6 +155,9 @@ func delta(signature, newfile, delta string, checkFile bool, comp proto.Comp) er
 	hl, err := sigDecode.ReadAllSignatures()
 	if err != nil {
 		return err
+	}
+	if *verbose {
+		fmt.Printf("Signature Count: %d\n", len(hl))
 	}
 
 	// Save operations to file.
