@@ -55,10 +55,13 @@ func (b *buffer) Next(needed int) ([]byte, error) {
 	}
 	var err error
 	var n int
-	if b.tail+needed > b.head {
+	for b.tail+needed > b.head {
 		// Read more data.
 		n, err = b.Read(b.backer[b.head:])
 		b.head += n
+		if err != nil {
+			break
+		}
 	}
 	return b.backer[b.tail:b.head], err
 }
