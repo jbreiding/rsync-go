@@ -63,7 +63,7 @@ func (b *buffer) Next(needed int) ([]byte, error) {
 			break
 		}
 	}
-	return b.backer[b.tail:b.head], err
+	return b.backer[b.tail : b.tail+needed], err
 }
 
 func (b *buffer) Used(used int) {
