@@ -121,8 +121,8 @@ func (r *RSync) CreateSignature(target io.Reader, sw SignatureWriter) error {
 	return nil
 }
 
-// Apply the difference to the target. If alignedTargetSum is present the alignedTarget content will be written to it.
-func (r *RSync) ApplyDelta(alignedTarget io.Writer, target io.ReadSeeker, ops chan Operation, alignedTargetSum hash.Hash) error {
+// Apply the difference to the target.
+func (r *RSync) ApplyDelta(alignedTarget io.Writer, target io.ReadSeeker, ops chan Operation) error {
 	if r.BlockSize <= 0 {
 		r.BlockSize = DefaultBlockSize
 	}
@@ -145,9 +145,6 @@ func (r *RSync) ApplyDelta(alignedTarget io.Writer, target io.ReadSeeker, ops ch
 			}
 		}
 		block = buffer[:n]
-		if alignedTargetSum != nil {
-			alignedTargetSum.Write(block)
-		}
 		_, err = alignedTarget.Write(block)
 		if err != nil {
 			return err
@@ -179,9 +176,6 @@ func (r *RSync) ApplyDelta(alignedTarget io.Writer, target io.ReadSeeker, ops ch
 				return err
 			}
 		case OpData:
-			if alignedTargetSum != nil {
-				alignedTargetSum.Write(op.Data)
-			}
 			_, err = alignedTarget.Write(op.Data)
 			if err != nil {
 				return err

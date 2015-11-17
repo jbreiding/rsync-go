@@ -157,7 +157,7 @@ func Test_GenData(t *testing.T) {
 		result := new(bytes.Buffer)
 
 		targetBuffer.Seek(0, 0)
-		err = rs.ApplyDelta(result, targetBuffer, opsOut, nil)
+		err = rs.ApplyDelta(result, targetBuffer, opsOut)
 		if err != nil {
 			t.Errorf("Failed to apply delta: %s", err)
 		}
