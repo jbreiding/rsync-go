@@ -1,0 +1,13 @@
+
+language: go
+go: 1.5.1
+
+os:
+  - linux
+  - osx
+
+install:
+  - go get -d -v ./...
+
+script:
+  - go test -v
