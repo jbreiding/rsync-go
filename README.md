@@ -1,5 +1,8 @@
 # rsync-go
 
+[![GoDoc](https://godoc.org/github.com/itchio/rsync-go?status.svg)](https://godoc.org/github.com/itchio/rsync-go)
+[![Build Status](https://travis-ci.org/itchio/rsync-go.svg?branch=master)](https://travis-ci.org/itchio/rsync-go)
+
 This is a pure go implementation of the rsync algorithm.
 
 This repo in particular is a fork of Daniel Teophanes's implementation
