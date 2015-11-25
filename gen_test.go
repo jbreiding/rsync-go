@@ -147,7 +147,7 @@ func Test_GenData(t *testing.T) {
 				}
 				opsOut <- op
 				return nil
-			}, nil)
+			})
 			t.Logf("Range Ops:%5d, Block Ops:%5d, Data Ops: %5d, Data Len: %5dKiB, For %s.", blockRangeCt, blockCt, dataCt, bytes/1024, p.Description)
 			if err != nil {
 				t.Errorf("Failed to create delta: %s", err)

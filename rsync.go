@@ -190,7 +190,7 @@ func (r *RSync) ApplyDelta(alignedTarget io.Writer, target io.ReadSeeker, ops ch
 // within the span of the function; the data buffer underlying the operation
 // data is reused. The sourceSum create a complete hash sum of the source if
 // present.
-func (r *RSync) CreateDelta(source io.Reader, signature []BlockHash, ops OperationWriter, sourceSum hash.Hash) (err error) {
+func (r *RSync) CreateDelta(source io.Reader, signature []BlockHash, ops OperationWriter) (err error) {
 	if r.BlockSize <= 0 {
 		r.BlockSize = DefaultBlockSize
 	}
@@ -306,9 +306,6 @@ func (r *RSync) CreateDelta(source io.Reader, signature []BlockHash, ops Operati
 			}
 
 			n, err = io.ReadAtLeast(source, buffer[validTo:validTo+r.BlockSize], r.BlockSize)
-			if sourceSum != nil {
-				sourceSum.Write(buffer[validTo : validTo+n])
-			}
 			validTo += n
 			if err != nil {
 				if err != io.EOF && err != io.ErrUnexpectedEOF {
